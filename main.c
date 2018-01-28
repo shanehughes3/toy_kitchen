@@ -7,12 +7,13 @@
 #define UCL_LED PD4
 #define OVEN_LED PD5
 
-typedef enum action {
+typedef enum {
 	INCREMENT,
 	RESET
-} Action;
+} CountAction;
 
-uint8_t ovf_count_handle(Action action) {
+// contain count within this function
+uint8_t wdt_ovf_count_handle(CountAction action) {
 	static uint8_t ovf_count = 0;
 	switch (action) {
 	case INCREMENT:
@@ -28,9 +29,9 @@ uint8_t ovf_count_handle(Action action) {
 // interrupt on button input (to wake from sleep)
 ISR(PCINT_vect)
 {
-	// re-enable watchdog interrupt (if disabled)
+	// (re-)enable watchdog interrupt
 	WDTCSR |= _BV(WDIE);
-	ovf_count_handle(RESET);
+	wdt_ovf_count_handle(RESET);
 }
 
 
@@ -41,6 +42,8 @@ ISR(TIMER0_COMPA_vect)
 	static uint8_t oven_btn_state = 0xff;
 	ucl_btn_state = (ucl_btn_state << 1) | (PINB & _BV(PB0));
 	oven_btn_state = (oven_btn_state << 1) | ((PINB & _BV(PB1)) >> 1);
+	// catch falling edge of either button - requires
+	// 7 low polls - approx. 20ms
 	if (ucl_btn_state == 0b10000000) {
 		PORTD ^= _BV(UCL_LED);
 	}
@@ -52,30 +55,33 @@ ISR(TIMER0_COMPA_vect)
 // watchdog timer overflow
 ISR(WDT_OVERFLOW_vect)
 {
-	if (ovf_count_handle(INCREMENT) > 1) {
+	// timeout in 10m (75 * 8s)
+	if (wdt_ovf_count_handle(INCREMENT) < 75) {
+		// not yet - still waiting
+		// re-enable interrupt (cleared on trigger each overflow)
+		WDTCSR |= _BV(WDIE);
+	} else {
+		// timeout 
 		// turn off leds (set to high)
 		PORTD = _BV(PD4) | _BV(PD5);
-		// reset count, go to sleep
-		ovf_count_handle(RESET);
-		// disable watchdog interrupt
-		WDTCSR |= ~_BV(WDIE);
+		// reset count, disable watchdog
+		wdt_ovf_count_handle(RESET);
+		WDTCSR &= ~_BV(WDIE);
+		// re-enable global interrupt (since we will be sleeping
+		// within this ISR and not return until wakeup)
 		sei();
 		sleep_mode();
-	} else {
-		// re-enable interrupt (cleared on trigger)
-		WDTCSR |= _BV(WDIE);
 	}
 }
 
 void main(void)
 {
-	// PD4 and 5 as output
+	// leds set as output, default to high
 	DDRD = _BV(UCL_LED) | _BV(OVEN_LED); 
-	// default both outputs to high
 	PORTD = _BV(PD4) | _BV(PD5);
-	// enable pull-up on inputs
+	// enable pull-up on connected inputs
 	PORTB = _BV(PB0) | _BV(PB1);
-	// enable pin change interrupts
+	// enable pin change interrupts for wakeup
 	GIMSK |= _BV(PCIE);
 	PCMSK = _BV(PCINT0) | _BV(PCINT1);
 	// set timer0 compare for about 2.8ms
@@ -86,8 +92,8 @@ void main(void)
 	TCCR0A |= 0b010;
 	// start timer, prescaler to clk/64
 	TCCR0B |= 0b011;
-	// watchdog timer setup - enable interrupt, wdt-clk/1024 (8s interval)
-	WDTCSR = _BV(WDIE) | _BV(WDP3) | _BV(WDP0);
+	// watchdog timer setup - wdt-clk/1024 (8s interval) - don't start
+	WDTCSR = _BV(WDP3) | _BV(WDP0);
 	
 	sei();
 
@@ -95,7 +101,6 @@ void main(void)
 	set_sleep_mode(SLEEP_MODE_PWR_DOWN);
 	sleep_mode();
 	
-	// stay busy before timeout
 	while(1);
 }
       
