@@ -1,6 +1,6 @@
 # toy_kitchen
 
-An AVR-controlled system for controlling lights in a toy kitchen, with timeout.
+An AVR-powered system for controlling lights in a toy kitchen, with timeout.
 
 
 ## Synopsis
